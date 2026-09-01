@@ -128,9 +128,12 @@ function Get-Category {
   # 한국 정부·기관이 주어면 해외 기사가 아니다
   $koreanActor = '^(청와대|정부|외교부|산업장관|국토부|기재부|한국은행|금융위|국방부|통일부|여당|야당|국회|대통령|총리|[가-힣]{2,4}\s?장관)'
 
+  # 국내 시장 지표는 국제 뉴스가 배경이어도 경제로 본다
+  if ($t -match '환율|코스피|코스닥|국고채|기준금리|증시 마감|원/달러') { return '경제' }
+
   if ($item.section -eq '국제') { return '해외' }
   if (($s -match '현지시간' -or $t -match $kwForeignStrong) -and $t -notmatch $koreanActor) {
-    if ($t -notmatch '한국은행|기획재정부|국내 증시|코스피|코스닥') { return '해외' }
+    if ($t -notmatch '한국은행|기획재정부') { return '해외' }
   }
   # 사건·사고는 실제 사건이어야 한다 (정치 발언·의결은 제외)
   if ($t -match $kwIncident -and
@@ -213,16 +216,68 @@ function Get-Similarity {
   return $inter / [double]($A.Count + $B.Count - $inter)
 }
 
-foreach ($c in $cands) { $c | Add-Member -NotePropertyName _bg -NotePropertyValue (Get-Bigrams $c._key) -Force }
+# 제목에서 내용어만 뽑는다 (조사·흔한 말은 뺀다)
+$stop = '기자|연합뉴스|오늘|내일|어제|올해|내년|작년|이날|관련|위해|대한|밝혀|밝혔다|대해|따라|통해|경우|가운데|모두|다시|계속|전망|예정|추진|검토|방침|입장|상황'
+function Get-Words {
+  param([string]$title)
+  $set = @{}
+  foreach ($m in [regex]::Matches($title, '[가-힣]{2,}|[A-Za-z]{3,}|\d+[가-힣]*')) {
+    $w = $m.Value
+    if ($w -match $stop) { continue }
+    if ($w.Length -ge 2) { $set[$w] = $true }
+  }
+  return $set
+}
+function Get-Containment {
+  param($A, $B)          # 작은 쪽 기준 포함도 — 제목 길이가 달라도 같은 사안을 잡아낸다
+  if ($A.Count -eq 0 -or $B.Count -eq 0) { return 0 }
+  $inter = 0
+  foreach ($k in $A.Keys) { if ($B.ContainsKey($k)) { $inter++ } }
+  return $inter / [double]([Math]::Min($A.Count, $B.Count))
+}
+function Get-Tag {
+  param([string]$title)  # '[네팔 대홍수]' 같은 말머리 = 같은 사안 묶음
+  $m = [regex]::Match($title, '^\[([^\]]{2,20})\]')
+  if ($m.Success -and $m.Groups[1].Value -notmatch '^속보$|^종합') { return $m.Groups[1].Value }
+  return ''
+}
 
-$sorted = @($cands | Sort-Object -Property _score -Descending)
-$picked = New-Object System.Collections.ArrayList
+foreach ($c in $cands) {
+  $c | Add-Member -NotePropertyName _bg  -NotePropertyValue (Get-Bigrams $c._key)  -Force
+  $c | Add-Member -NotePropertyName _wd  -NotePropertyValue (Get-Words $c.title)   -Force
+  $c | Add-Member -NotePropertyName _tag -NotePropertyValue (Get-Tag $c.title)     -Force
+}
+
+$sorted  = @($cands | Sort-Object -Property _score -Descending)
+$picked  = New-Object System.Collections.ArrayList
+$tagSeen = @{}
 foreach ($c in $sorted) {
   $dup = $false
   foreach ($p in $picked) {
-    if ((Get-Similarity $p._bg $c._bg) -ge 0.42) { $dup = $true; break }   # 같은 사안의 다른 판
+    if ((Get-Similarity  $p._bg $c._bg) -ge 0.42) { $dup = $true; break }
+    if ((Get-Containment $p._wd $c._wd) -ge 0.55) { $dup = $true; break }   # 같은 사안의 다른 기사
+    # 한국어는 조사가 붙어 단어가 달라지므로 글자 단위 포함도로도 본다
+    if ((Get-Containment $p._bg $c._bg) -ge 0.55) { $dup = $true; break }
   }
-  if (-not $dup) { [void]$picked.Add($c) }
+  if ($dup) { continue }
+
+  if ($c._tag) {                                   # 같은 말머리는 분류당 2건까지만
+    $k = $c._cat + '|' + $c._tag
+    if ($tagSeen.ContainsKey($k) -and $tagSeen[$k] -ge 2) { continue }
+    if ($tagSeen.ContainsKey($k)) { $tagSeen[$k]++ } else { $tagSeen[$k] = 1 }
+  }
+
+  # 같은 사안 '계열'도 분류당 2건까지 — 핵심어 2개 이상을 공유하면 같은 계열로 본다
+  $related = 0
+  foreach ($p in $picked) {
+    if ($p._cat -ne $c._cat) { continue }
+    $shared = 0
+    foreach ($w in $c._wd.Keys) { if ($p._wd.ContainsKey($w)) { $shared++ } }
+    if ($shared -ge 2) { $related++ }
+  }
+  if ($related -ge 2) { continue }
+
+  [void]$picked.Add($c)
 }
 
 # ---------------------------------------------------------------- 분류별 선별 (전날 기사 최소 보장)
