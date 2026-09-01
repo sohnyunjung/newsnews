@@ -1,0 +1,51 @@
+name: 뉴스 수집 및 브리핑
+
+on:
+  schedule:
+    # GitHub cron 은 UTC 기준. 한국시간(KST) = UTC + 9
+    # 3시간마다 수집·갱신 → KST 01:10 / 04:10 / 07:10 / 10:10 / 13:10 / 16:10 / 19:10 / 22:10
+    - cron: '10 16,19,22,1,4,7,10,13 * * *'
+    # KST 14:05 — 하루의 기준 브리핑
+    - cron: '5 5 * * *'
+  workflow_dispatch:        # 수동 실행 버튼
+
+concurrency:
+  group: news
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul        # 스크립트가 한국시간으로 동작하도록
+
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 기사 수집
+        shell: pwsh
+        run: ./scripts/collect-news.ps1
+
+      - name: 중요 기사 선별
+        shell: pwsh
+        run: ./scripts/digest-select.ps1
+
+      - name: 페이지 생성
+        shell: pwsh
+        run: ./scripts/build-page.ps1 -Full -OutFile docs/index.html
+
+      - name: 변경사항 커밋
+        run: |
+          git config user.name  "news-bot"
+          git config user.email "actions@github.com"
+          git add -A data digest docs
+          if git diff --staged --quiet; then
+            echo "변경 없음"
+          else
+            git commit -m "브리핑 갱신 $(date '+%Y-%m-%d %H:%M')"
+            git push
+          fi

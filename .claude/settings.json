@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"C:/Users/sohnyj/놓치면 안되는 속보\" && powershell.exe -ExecutionPolicy Bypass -NoProfile -Command *)",
+      "Read(data/**)",
+      "Read(digest/**)",
+      "Read(config/**)",
+      "Read(scripts/**)",
+      "Edit(digest/**)",
+      "Write(digest/**)",
+      "Edit(data/**)",
+      "Write(data/**)",
+      "Artifact"
+    ]
+  }
+}
